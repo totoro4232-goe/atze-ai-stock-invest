@@ -1,0 +1,314 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+
+// ==========================================
+// 1. 데이터 상수 분리 (Data Section)
+// ==========================================
+const STOCKS = {
+  KOREA: ['삼성전자', 'SK하이닉스', 'NAVER', '카카오', 'LG에너지솔루션', '현대차', '셀트리온', '삼성SDI', '기아', 'POSCO홀딩스'],
+  US: ['Apple', 'Microsoft', 'NVIDIA', 'Tesla', 'Google', 'Amazon', 'Meta', 'Netflix', 'AMD', 'Intel'],
+  ETF: [
+    { name: 'SPY', desc: 'S&P500 추종', region: '미국' },
+    { name: 'QQQ', desc: '나스닥100', region: '미국' },
+    { name: 'SCHD', desc: '배당성장', region: '미국' },
+    { name: 'KODEX 200', desc: '코스피200', region: '한국' },
+    { name: 'TIGER 미국S&P500', desc: 'S&P500 원화', region: '미국' },
+  ]
+};
+
+const SECTORS = [
+  { id: 'ai', name: 'AI', keywords: '인공지능, GPU, LLM' },
+  { id: 'semiconductor', name: '반도체', keywords: 'HBM, 파운드리' },
+  { id: 'battery', name: '2차전지', keywords: 'EV, 양극재' },
+  { id: 'bio', name: '바이오', keywords: '신약, CDMO' },
+  { id: 'defense', name: '방산', keywords: 'K-방산, 수출' },
+];
+
+// ==========================================
+// 2. 하위 컴포넌트 (Sub-Components)
+// ==========================================
+
+// 복사 버튼 컴포넌트 (피드백 기능 추가)
+const CopyButton = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      alert("복사 실패!");
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className={`px-6 py-3 rounded-xl font-bold transition-all transform active:scale-95 ${
+        copied ? 'bg-green-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700 shadow-lg'
+      }`}
+    >
+      {copied ? '✅ 복사 완료!' : '📋 프롬프트 복사'}
+    </button>
+  );
+};
+
+// 옵션 선택 버튼 그룹
+const OptionGroup = ({ label, options, value, onChange, cols = 3 }) => (
+  <div className="mb-5">
+    <p className="text-sm font-bold mb-2 text-gray-800 flex items-center">
+      <span className="w-1 h-4 bg-blue-500 rounded-full mr-2"></span> {label}
+    </p>
+    <div className={`grid gap-2 grid-cols-${cols}`}>
+      {options.map(opt => (
+        <button
+          key={opt}
+          onClick={() => onChange(opt)}
+          className={`py-3 px-2 rounded-xl border-2 text-sm font-medium transition-all ${
+            value === opt 
+            ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' 
+            : 'border-gray-100 bg-white text-gray-500 hover:border-gray-200'
+          }`}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+// ==========================================
+// 3. 메인 앱 컴포넌트 (Main App)
+// ==========================================
+export default function StockPromptPro() {
+  // --- States ---
+  const [currentMenu, setCurrentMenu] = useState('recommend');
+  const [selectedStocks, setSelectedStocks] = useState([]);
+  const [generatedPrompt, setGeneratedPrompt] = useState('');
+  const [promptHistory, setPromptHistory] = useState([]);
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  
+  // --- 옵션 States ---
+  const [recommendOpt, setRecommendOpt] = useState({ sector: 'ai', type: '성장주', period: '6개월' });
+  const [technicalOpt, setTechnicalOpt] = useState({ indicator: '이동평균', timeframe: '일봉' });
+
+  const inputRef = useRef(null);
+
+  // --- Persistence (로컬스토리지 저장) ---
+  useEffect(() => {
+    const savedStocks = localStorage.getItem('selected_stocks');
+    const savedHistory = localStorage.getItem('prompt_history');
+    if (savedStocks) setSelectedStocks(JSON.parse(savedStocks));
+    if (savedHistory) setPromptHistory(JSON.parse(savedHistory));
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('selected_stocks', JSON.stringify(selectedStocks));
+  }, [selectedStocks]);
+
+  useEffect(() => {
+    localStorage.setItem('prompt_history', JSON.stringify(promptHistory));
+  }, [promptHistory]);
+
+  // --- Handlers ---
+  const toggleStock = (name) => {
+    setSelectedStocks(prev => prev.includes(name) ? prev.filter(s => s !== name) : [...prev, name]);
+  };
+
+  const addCustomStock = () => {
+    const val = inputRef.current?.value.trim();
+    if (val && !selectedStocks.includes(val)) {
+      setSelectedStocks([...selectedStocks, val]);
+      inputRef.current.value = '';
+    }
+  };
+
+  const saveToHistory = useCallback((prompt) => {
+    const newEntry = {
+      id: Date.now(),
+      title: `${currentMenu.toUpperCase()} 분석`,
+      content: prompt,
+      time: new Date().toLocaleTimeString()
+    };
+    setPromptHistory(prev => [newEntry, ...prev].slice(0, 10));
+  }, [currentMenu]);
+
+  // --- RICE 2.0 프롬프트 엔진 ---
+  const generatePrompt = () => {
+    const timestamp = new Date().toLocaleString();
+    let specificContent = "";
+
+    if (currentMenu === 'recommend') {
+      const sector = SECTORS.find(s => s.id === recommendOpt.sector);
+      specificContent = `
+[Instruction]
+- 섹터: ${sector.name} (${sector.keywords})
+- 스타일: ${recommendOpt.type}
+- 기간: ${recommendOpt.period}
+- 목표: 위 조건에 부합하는 TOP 3 종목 발굴 및 '수익성/성장성/밸류' 점수화
+
+[Visual Request]
+- 분석 결과를 깔끔한 Markdown 테이블로 제시할 것.
+- 마지막에 해당 섹터의 향후 6개월 전망을 'ASCII Chart' 형태의 막대그래프로 시각화할 것.
+      `;
+    } else if (currentMenu === 'technical') {
+      specificContent = `
+[Instruction]
+- 분석 종목: ${selectedStocks.join(', ')}
+- 지표: ${technicalOpt.indicator} (${technicalOpt.timeframe})
+- 핵심 요구: 현재 주가 대비 지지/저항선을 명확한 가격(Number)으로 제시하고, '골든크로스' 혹은 '데드크로스' 징후를 포착할 것.
+      `;
+    }
+
+    const finalPrompt = `
+📅 분석 시점: ${timestamp}
+[Role] 당신은 월스트리트 출신의 20년 경력 수석 애널리스트입니다.
+[Context] 현재 2026년 시장 상황과 금리 추이를 반영하여 실시간 Web Search 결과를 바탕으로 답변하세요.
+
+${specificContent}
+
+[Output Format]
+1. 요약 (1줄)
+2. 상세 분석 (테이블)
+3. 리스크 요인 및 대응가(손절/익절)
+4. AI 한줄 평
+    `.trim();
+
+    setGeneratedPrompt(finalPrompt);
+    saveToHistory(finalPrompt);
+  };
+
+  // --- UI ---
+  return (
+    <div className={`min-h-screen transition-colors ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
+      {/* Header */}
+      <header className="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b px-4 py-3 flex justify-between items-center shadow-sm">
+        <h1 className="text-xl font-extrabold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+          Stock AI Pro 2.0
+        </h1>
+        <button 
+          onClick={() => setIsDarkMode(!isDarkMode)}
+          className="p-2 rounded-full bg-gray-100 hover:bg-gray-200 transition"
+        >
+          {isDarkMode ? '☀️' : '🌙'}
+        </button>
+      </header>
+
+      <main className="max-w-md mx-auto p-4 space-y-6">
+        {/* Menu Tabs */}
+        <div className="flex space-x-2 overflow-x-auto pb-2 scrollbar-hide">
+          {['recommend', 'technical', 'history'].map(m => (
+            <button
+              key={m}
+              onClick={() => setCurrentMenu(m)}
+              className={`px-5 py-2.5 rounded-full text-sm font-bold whitespace-nowrap transition-all ${
+                currentMenu === m ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-400 border'
+              }`}
+            >
+              {m === 'recommend' ? '💡 종목발굴' : m === 'technical' ? '📈 기술분석' : '📜 히스토리'}
+            </button>
+          ))}
+        </div>
+
+        {/* Content Section */}
+        {currentMenu !== 'history' && (
+          <section className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
+            {currentMenu === 'recommend' ? (
+              <>
+                <div className="grid grid-cols-5 gap-2 mb-5">
+                  {SECTORS.map(s => (
+                    <button 
+                      key={s.id}
+                      onClick={() => setRecommendOpt({...recommendOpt, sector: s.id})}
+                      className={`py-2 rounded-lg text-xs font-bold border-2 ${recommendOpt.sector === s.id ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-transparent bg-gray-50 text-gray-400'}`}
+                    >
+                      {s.name}
+                    </button>
+                  ))}
+                </div>
+                <OptionGroup label="투자 스타일" options={['성장주', '가치주', '배당주']} value={recommendOpt.type} onChange={v => setRecommendOpt({...recommendOpt, type: v})} />
+                <OptionGroup label="투자 기간" options={['3개월', '6개월', '1년']} value={recommendOpt.period} onChange={v => setRecommendOpt({...recommendOpt, period: v})} />
+              </>
+            ) : (
+              <>
+                <div className="mb-5">
+                  <div className="flex gap-2 mb-3">
+                    <input ref={inputRef} placeholder="종목명 입력 (ex: 엔비디아)" className="flex-1 bg-gray-50 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500" />
+                    <button onClick={addCustomStock} className="bg-gray-800 text-white px-4 py-3 rounded-xl text-sm font-bold">추가</button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {STOCKS.KOREA.slice(0, 5).map(s => (
+                      <button key={s} onClick={() => toggleStock(s)} className={`px-3 py-1.5 rounded-full text-xs font-medium border ${selectedStocks.includes(s) ? 'bg-blue-500 text-white border-blue-500' : 'bg-white text-gray-400'}`}>{s}</button>
+                    ))}
+                  </div>
+                </div>
+                <OptionGroup label="보조 지표" options={['이동평균', 'RSI/MACD', '거래량']} value={technicalOpt.indicator} onChange={v => setTechnicalOpt({...technicalOpt, indicator: v})} />
+              </>
+            )}
+
+            <button 
+              onClick={generatePrompt}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-100 transition-all active:scale-[0.98]"
+            >
+              ✨ RICE 2.0 프롬프트 생성
+            </button>
+          </section>
+        )}
+
+        {/* History Section */}
+        {currentMenu === 'history' && (
+          <section className="space-y-3">
+            {promptHistory.length === 0 ? (
+              <p className="text-center text-gray-400 py-10">저장된 히스토리가 없습니다.</p>
+            ) : (
+              promptHistory.map(item => (
+                <div key={item.id} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-xs font-bold text-blue-600">{item.title}</span>
+                    <span className="text-[10px] text-gray-400">{item.time}</span>
+                  </div>
+                  <p className="text-xs text-gray-600 line-clamp-2 mb-3 font-mono">{item.content}</p>
+                  <button 
+                    onClick={() => setGeneratedPrompt(item.content)}
+                    className="text-xs font-bold text-indigo-500 underline"
+                  >
+                    이 프롬프트 불러오기
+                  </button>
+                </div>
+              ))
+            )}
+          </section>
+        )}
+
+        {/* Prompt Result View */}
+        {generatedPrompt && (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="bg-white rounded-3xl p-5 shadow-xl border border-blue-100">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="font-bold text-gray-800 flex items-center">
+                   🔥 생성된 프롬프트
+                </h3>
+              </div>
+              <textarea
+                readOnly
+                value={generatedPrompt}
+                className="w-full h-48 bg-gray-50 rounded-2xl p-4 text-xs font-mono leading-relaxed text-gray-600 border-none focus:ring-0 mb-4"
+              />
+              <div className="flex flex-col gap-2">
+                <CopyButton text={generatedPrompt} />
+                <p className="text-[10px] text-gray-400 text-center">
+                  위 프롬프트를 복사해 ChatGPT, Perplexity 등에 사용하세요.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      <footer className="max-w-md mx-auto p-8 text-center space-y-2 opacity-50">
+        <p className="text-xs">© REAL LEADERSHIP | AI Stock Helper</p>
+        <p className="text-[10px]">본 도구는 투자 참고용이며 최종 결정은 본인에게 있습니다.</p>
+      </footer>
+    </div>
+  );
+}
